@@ -1,5 +1,4 @@
 CREATE TABLE tasks (
   id INTEGER NOT NULL PRIMARY KEY,
-  title VARCHAR NOT NULL,
-  body TEXT NOT NULL
+  description TEXT NOT NULL
 )
