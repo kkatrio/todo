@@ -2,8 +2,9 @@
 #[macro_use] extern crate rocket_sync_db_pools;
 #[macro_use] extern crate diesel;
 
+use std::fmt;
 use self::diesel::prelude::*;
-use rocket::serde::{Serialize, json::Json};
+use rocket::serde::{Serialize}; //,json::Json
 
 table! {
     tasks (id) {
@@ -12,7 +13,7 @@ table! {
     }
 }
 
-#[derive(Queryable, Serialize)]
+#[derive(Queryable, Serialize, Debug)]
 #[serde(crate = "rocket::serde")]
 pub struct Task {
     pub id: i32,
@@ -25,16 +26,32 @@ pub struct NewTask<'a> {
     pub description: &'a str,
 }
 
+impl fmt::Display for Task {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> fmt::Result {
+        write!(f, "-- {}", self.description)
+    }
+}
+
 #[database("sqlite_database")]
 struct Db(diesel::SqliteConnection);
 
+fn print_list(v: &Vec<Task>) -> String {
+    let mut output = String::new();
+    for i in v {
+        output.push_str("-- ");
+        output.push_str(&i.description);
+        output.push_str("\n");
+    }
+    output
+}
+
 #[get("/")]
-async fn list(db: Db) -> Json<Vec<Task>> {
+async fn list(db: Db) -> String {
     let results : Vec<Task> = db.run( |conn| {
         tasks::table
             .load::<Task>(conn)
     }).await.expect("Error loading tasks");
-    Json(results)
+    print_list(&results)
 }
 
 fn create_task(conn: &mut diesel::SqliteConnection, description: &str) {
@@ -62,12 +79,14 @@ async fn delete(db: Db, id: i32) {
 }
 
 #[get("/<id>")]
-async fn read(db: Db, id: i32) -> Option<Json<Task>> {
-    db.run( move |conn| {
+async fn read(db: Db, id: i32) -> String {
+    let entry : Task = db.run( move |conn| {
         tasks::table
             .filter(tasks::id.eq(id))
             .first(conn)
-    }).await.map(Json).ok() 
+    }).await.expect("Error retireving id"); 
+
+    format!("{}", entry)
 }
 
 #[delete("/")]
