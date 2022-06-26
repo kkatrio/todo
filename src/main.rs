@@ -4,7 +4,10 @@
 
 use std::fmt;
 use self::diesel::prelude::*;
-use rocket::serde::{Serialize}; //,json::Json
+use rocket::serde::Serialize;
+use rocket_dyn_templates::Template;
+use rocket::form::{Form, Contextual};
+use rocket::http::Status;
 
 table! {
     tasks (id) {
@@ -15,15 +18,16 @@ table! {
 
 #[derive(Queryable, Serialize, Debug)]
 #[serde(crate = "rocket::serde")]
-pub struct Task {
-    pub id: i32,
-    pub description: String,
+struct Task {
+    id: i32,
+    description: String,
 }
 
-#[derive(Insertable)]
+#[derive(Insertable, Debug, FromForm, Clone)]
 #[table_name = "tasks"]
-pub struct NewTask<'a> {
-    pub description: &'a str,
+struct NewTask {
+    #[field(default = "default description")]
+    description: String,
 }
 
 impl fmt::Display for Task {
@@ -35,31 +39,38 @@ impl fmt::Display for Task {
 #[database("sqlite_database")]
 struct Db(diesel::SqliteConnection);
 
-fn print_list(v: &Vec<Task>) -> String {
-    let mut output = String::new();
-    for i in v {
-        output.push_str("-- ");
-        output.push_str(&i.description);
-        output.push_str("\n");
-    }
-    output
+#[derive(Debug, Serialize)]
+#[serde(crate = "rocket::serde")]
+struct TaskContext {
+    tasks: Vec<Task>
 }
 
-#[get("/")]
-async fn list(db: Db) -> String {
-    let results : Vec<Task> = db.run( |conn| {
-        tasks::table
-            .load::<Task>(conn)
-    }).await.expect("Error loading tasks");
-    print_list(&results)
+impl TaskContext {
+    async fn raw(db: &Db) -> TaskContext {
+        let results : Vec<Task> = db.run( |conn| {
+            tasks::table
+                .load::<Task>(conn)
+        }).await.expect("Error loading tasks");
+
+        TaskContext { tasks: results }
+    }
 }
 
 fn create_task(conn: &mut diesel::SqliteConnection, description: &str) {
-    let new_task = NewTask {description};
+    let new_task = NewTask {description: description.to_string()};
     diesel::insert_into(tasks::table)
         .values(&new_task)
         .execute(conn)
         .expect("Error creating task");
+}
+
+async fn insert_task(db: &Db, new_task: NewTask) {
+    db.run(|conn| {
+           diesel::insert_into(tasks::table)
+           .values(new_task)
+           .execute(conn)
+           .expect("Error creating task");
+    }).await
 }
 
 #[get("/new")]
@@ -97,11 +108,32 @@ async fn clear(dn: Db) {
     }).await.expect("Error deleting table");
 }
 
+#[get("/")]
+async fn index(db: Db) -> Template {
+    Template::render("index", TaskContext::raw(&db).await)
+}
+
+#[post("/", data = "<form>")]
+async fn new<'r>(form: Form<Contextual<'r, NewTask>>, db: Db) -> (Status, Template) {
+
+    let new_task = form.value.clone().unwrap();
+    insert_task(&db, new_task).await;
+
+    let template = match form.value {
+        Some(ref submission) => {
+            println!("submission: {:#?}", submission);
+            Template::render("success", &form.context)
+        }
+        None => Template::render("index", &form.context),
+    };
+    (form.context.status(), template)
+}
 
 #[launch]
 fn rocket() -> _ {
     rocket::build()
         .attach(Db::fairing())
-        .mount("/", routes![list, create, delete, read, clear])
+        .mount("/", routes![index, create, delete, read, clear, new])
+        .attach(Template::fairing())
 }
 
